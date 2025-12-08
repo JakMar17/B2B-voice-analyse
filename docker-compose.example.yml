@@ -1,0 +1,15 @@
+services:
+  speech-analyzer:
+    build: .
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+    # volumes: # uncomment if you want to mount local code for dev
+    #   - ./:/app
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/docs || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
