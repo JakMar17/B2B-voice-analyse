@@ -13,20 +13,48 @@ def analyze_speech_return_dict(audio_path, segments=5):
 
     # ---------------- TONALITY ----------------
     def analyze_tonality(y, sr):
-        pitches, _ = librosa.piptrack(y=y, sr=sr)
-        pitch_variations = np.mean(pitches, axis=0)
+        # 1. Extract raw pitch (Hz)
+        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+        
+        absolute_pitches = []
+        for t in range(pitches.shape[1]):
+            index = magnitudes[:, t].argmax()
+            pitch = pitches[index, t]
+            if 70 < pitch < 400: # Human vocal range filter
+                absolute_pitches.append(pitch)
+        
+        if not absolute_pitches:
+            return np.zeros(num_parts)
 
-        # Edge case: flat pitch
-        if np.max(pitch_variations) - np.min(pitch_variations) == 0:
-            normalized_variations = np.zeros_like(pitch_variations)
-        else:
-            normalized_variations = (
-                (pitch_variations - np.min(pitch_variations)) /
-                (np.max(pitch_variations) - np.min(pitch_variations))
-            ) * 100
+        absolute_pitches = np.array(absolute_pitches)
+        base_hz = np.mean(absolute_pitches)
+        
+        # 2. Calculate local percentage deviations (Relative to speaker's own base)
+        # This allows us to judge the "effort" regardless of gender or natural pitch
+        dev_pct = np.abs((absolute_pitches - base_hz) / base_hz) * 100
+        
+        # 3. Calculate "Vocal Energy" (Standard Deviation of the percentages)
+        # This represents how much the speaker "moves" their tone.
+        vocal_energy = np.std(dev_pct) 
 
-        # Resample to the number of segments
-        return resample(normalized_variations, num_parts)
+        # 4. Map Vocal Energy to your 0-100 scale
+        # Calibrated Logic:
+        # - Low movement (0-2%) -> 0-30 (Monotone)
+        # - Standard movement (approx 5%) -> 45 (Base Monotony Anchor)
+        # - High movement (>12%) -> 70-100 (Engagement)
+        
+        # Transformation Multiplier (Linear Scaling for simplicity)
+        # Adjust the 'scalar' to tune the sensitivity of the zones
+        scalar = 9.0 
+        offset = 10.0 # Ensures we don't start at literal zero
+        
+        zone_data = (dev_pct * (scalar / (vocal_energy + 1e-6))) + offset
+        
+        # Ensure results stay within the 0-100 constraints
+        final_data = np.clip(zone_data, 0, 100)
+
+        # 5. Resample to match your output length (num_parts)
+        return resample(final_data, num_parts)
 
     # ---------------- PACE ----------------
     def analyze_pace(y, sr, num_parts):
