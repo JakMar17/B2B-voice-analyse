@@ -12,49 +12,40 @@ def analyze_speech_return_dict(audio_path, segments=5):
     time_intervals = np.linspace(0, audio_length, num=num_parts).tolist()
 
     # ---------------- TONALITY ----------------
-    def analyze_tonality(y, sr):
-        # 1. Extract raw pitch (Hz)
-        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+    def analyze_tonality(y, sr, num_parts):
+        segment_length = len(y) // num_parts
+        tonality_scores = []
         
-        absolute_pitches = []
-        for t in range(pitches.shape[1]):
-            index = magnitudes[:, t].argmax()
-            pitch = pitches[index, t]
-            if 70 < pitch < 400: # Human vocal range filter
-                absolute_pitches.append(pitch)
+        for i in range(num_parts):
+            segment_y = y[i * segment_length : (i + 1) * segment_length]
+            if len(segment_y) < sr * 0.5:  # Skip very short segments (<0.5s)
+                tonality_scores.append(0.0)
+                continue
+                
+            pitches, magnitudes = librosa.piptrack(y=segment_y, sr=sr)
+            absolute_pitches = []
+            for t in range(pitches.shape[1]):
+                idx = magnitudes[:, t].argmax()
+                pitch = pitches[idx, t]
+                if 70 < pitch < 400:
+                    absolute_pitches.append(pitch)
+            
+            if len(absolute_pitches) < 5:  # Lowered threshold for segments
+                tonality_scores.append(0.0)
+                continue
+                
+            pitches = np.array(absolute_pitches)
+            log_pitches = np.log2(pitches)
+            baseline = np.median(log_pitches)
+            deviations = np.abs(log_pitches - baseline)
+            variability = np.std(deviations)
+            pitch_range = np.percentile(deviations, 90) - np.percentile(deviations, 10)
+            tonality_energy = (variability * 0.6) + (pitch_range * 0.4)
+            score = np.clip(tonality_energy * 120, 0, 100)
+            tonality_scores.append(score)
         
-        if not absolute_pitches:
-            return np.zeros(num_parts)
+        return np.array(tonality_scores)
 
-        absolute_pitches = np.array(absolute_pitches)
-        base_hz = np.mean(absolute_pitches)
-        
-        # 2. Calculate local percentage deviations (Relative to speaker's own base)
-        # This allows us to judge the "effort" regardless of gender or natural pitch
-        dev_pct = np.abs((absolute_pitches - base_hz) / base_hz) * 100
-        
-        # 3. Calculate "Vocal Energy" (Standard Deviation of the percentages)
-        # This represents how much the speaker "moves" their tone.
-        vocal_energy = np.std(dev_pct) 
-
-        # 4. Map Vocal Energy to your 0-100 scale
-        # Calibrated Logic:
-        # - Low movement (0-2%) -> 0-30 (Monotone)
-        # - Standard movement (approx 5%) -> 45 (Base Monotony Anchor)
-        # - High movement (>12%) -> 70-100 (Engagement)
-        
-        # Transformation Multiplier (Linear Scaling for simplicity)
-        # Adjust the 'scalar' to tune the sensitivity of the zones
-        scalar = 9.0 
-        offset = 10.0 # Ensures we don't start at literal zero
-        
-        zone_data = (dev_pct * (scalar / (vocal_energy + 1e-6))) + offset
-        
-        # Ensure results stay within the 0-100 constraints
-        final_data = np.clip(zone_data, 0, 100)
-
-        # 5. Resample to match your output length (num_parts)
-        return resample(final_data, num_parts)
 
     # ---------------- PACE ----------------
     def analyze_pace(y, sr, num_parts):
@@ -136,7 +127,7 @@ def analyze_speech_return_dict(audio_path, segments=5):
         return masculinity_percentage, femininity_percentage
 
     # ---------------- RUN ANALYSIS ----------------
-    tonality_var = analyze_tonality(y, sr)
+    tonality_var = analyze_tonality(y, sr, num_parts)
     pace_var = analyze_pace(y, sr, num_parts)
     pauses_var = analyze_pauses(y, sr, num_parts)
     masculinity_percentage, femininity_percentage = analyze_vocal_characters(y, sr)
